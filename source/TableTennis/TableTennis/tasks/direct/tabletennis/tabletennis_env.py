@@ -5,15 +5,14 @@
 
 from __future__ import annotations
 
-import math
 import torch
-from collections.abc import Sequence
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation
-from isaaclab.envs import DirectRLEnv
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
-from isaaclab.utils.math import sample_uniform
+from isaaclab.assets import Articulation
+from isaaclab.assets.rigid_object.rigid_object import RigidObject
+from isaaclab.envs import DirectRLEnv
+from isaaclab.utils.math import quat_apply
 
 from .tabletennis_env_cfg import TabletennisEnvCfg
 
@@ -21,112 +20,322 @@ from .tabletennis_env_cfg import TabletennisEnvCfg
 class TabletennisEnv(DirectRLEnv):
     cfg: TabletennisEnvCfg
 
-    def __init__(self, cfg: TabletennisEnvCfg, render_mode: str | None = None, **kwargs):
+    def __init__(
+        self, cfg: TabletennisEnvCfg, render_mode: str | None = None, **kwargs
+    ):
         super().__init__(cfg, render_mode, **kwargs)
 
-        self._cart_dof_idx, _ = self.robot.find_joints(self.cfg.cart_dof_name)
-        self._pole_dof_idx, _ = self.robot.find_joints(self.cfg.pole_dof_name)
+        self.dt = self.cfg.sim.dt * self.cfg.decimation
 
-        self.joint_pos = self.robot.data.joint_pos
-        self.joint_vel = self.robot.data.joint_vel
+        self.robot_dof_targets = torch.zeros(
+            (self.num_envs, self._robot.num_joints), device=self.device
+        )
+        self.total_reward = torch.zeros(self.num_envs, device=self.device)
+        self.has_touch_paddle = torch.zeros(self.num_envs, device=self.device).bool()
+        self.has_first_bouce = torch.zeros(self.num_envs, device=self.device).bool()
+        self.has_first_bouce_prev = torch.zeros(
+            self.num_envs, device=self.device
+        ).bool()
+        self.has_touch_own_table = torch.zeros(self.num_envs, device=self.device).bool()
+        self.has_touch_own_table_prev = torch.zeros(
+            self.num_envs, device=self.device
+        ).bool()
 
     def _setup_scene(self):
-        self.robot = Articulation(self.cfg.robot_cfg)
-        # add ground plane
+        # marker_cfg = VisualizationMarkersCfg(
+        #     prim_path="/World/TouchPointMarkers",
+        #     markers={
+        #         "touch": sim_utils.SphereCfg(
+        #             radius=0.02,
+        #             visual_material=sim_utils.PreviewSurfaceCfg(
+        #                 diffuse_color=(1.0, 0.0, 0.0),  # bright red
+        #                 metallic=0.0,
+        #             ),
+        #         )
+        #     },
+        # )
+        # self.touch_marker = VisualizationMarkers(marker_cfg)
+        # self.touch_marker.set_visibility(True)
+
+        self._robot = Articulation(self.cfg.robot)
+        self._table = RigidObject(self.cfg.table)
+        self._ball = RigidObject(self.cfg.ball)
+        self.scene.articulations["robot"] = self._robot
+        self.scene.rigid_objects["table"] = self._table
+        self.scene.rigid_objects["ball"] = self._ball
+
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
-        # clone and replicate
         self.scene.clone_environments(copy_from_source=False)
-        # add articulation to scene
-        self.scene.articulations["robot"] = self.robot
+
         # add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
-    def _pre_physics_step(self, actions: torch.Tensor) -> None:
+    # pre-physics step calls
+    def _pre_physics_step(self, actions: torch.Tensor):
         self.actions = actions.clone()
 
-    def _apply_action(self) -> None:
-        self.robot.set_joint_effort_target(self.actions * self.cfg.action_scale, joint_ids=self._cart_dof_idx)
+    def _apply_action(self):
+        self._robot.set_joint_position_target(self.actions * 50)
+
+    # post-physics step calls
+    def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+        truncated = self.episode_length_buf >= self.max_episode_length - 1
+        total_reward = self.total_reward.unsqueeze(1)
+        stop = torch.any(total_reward <= -1, dim=1) | torch.any(total_reward > 1, dim=1)
+        # if stop:
+        #     print("----Has been stopped----")
+        #     print("total_reward", total_reward)
+        #     print("--------")
+        return stop, truncated
+
+    def _get_rewards(self) -> torch.Tensor:
+        # Call _compute_intermediate_values() before getting rewards to ensure
+        # that ball_vel and ball_contact are updated.
+        self._compute_intermediate_values()
+
+        # Compute the reward using our custom function.
+        self.total_reward: torch.Tensor = compute_rewards(
+            self.cfg.rew_scale_y,
+            self.cfg.rew_scale_contact,
+            self.cfg.rew_scale_table_success,
+            self.cfg.rew_scale_table_fail,
+            self.cfg.rew_scale_ball_floor,
+            self.ball_linvel,
+            self.ball_contact,
+            self.has_touch_paddle,
+            self.has_touch_opponent_table,
+            self.has_touch_own_table,
+            self.has_first_bouce_prev,
+            self.ball_pos,
+        )
+        return self.total_reward
+
+    def _reset_idx(self, env_ids: torch.Tensor | None):
+        super()._reset_idx(env_ids)
+        # print("----- reset -----")
+
+        # robot
+        self.has_touch_paddle = torch.zeros(self.num_envs, device=self.device).bool()
+        self.has_first_bouce = torch.zeros(self.num_envs, device=self.device).bool()
+        self.has_first_bouce_prev = torch.zeros(
+            self.num_envs, device=self.device
+        ).bool()
+        self.has_touch_own_table = torch.zeros(self.num_envs, device=self.device).bool()
+        self.has_touch_own_table_prev = torch.zeros(
+            self.num_envs, device=self.device
+        ).bool()
+        joint_pos = self._robot.data.default_joint_pos[env_ids]
+        joint_vel = torch.zeros_like(joint_pos)
+        self._robot.write_joint_position_to_sim(joint_pos, env_ids=env_ids)
+        self._robot.write_joint_velocity_to_sim(joint_vel, env_ids=env_ids)
+
+        # ball
+        ball_state = self._ball.data.default_root_state.clone()[env_ids]
+        # Add the per-environment offsets to the ball positions.
+        ball_state[:, 0:3] = ball_state[:, 0:3] + self.scene.env_origins[env_ids]
+        # Add random position noise on the x-axis.
+        pos_noise = torch.empty(len(env_ids), 1, device=self.device).uniform_(
+            *self.cfg.ball_pos_x_range
+        )
+        ball_state[:, 0:1] = ball_state[:, 0:1] + pos_noise
+        # Generate random linear velocities for the ball.
+        v_x = torch.empty(len(env_ids), 1, device=self.device).uniform_(
+            *self.cfg.ball_speed_x_range
+        )
+        v_y = torch.empty(len(env_ids), 1, device=self.device).uniform_(
+            *self.cfg.ball_speed_y_range
+        )
+        v_z = torch.empty(len(env_ids), 1, device=self.device).uniform_(
+            *self.cfg.ball_speed_z_range
+        )
+        lin_vel = torch.cat((v_x, v_y, v_z), dim=1)
+        # Set angular velocities to zero.
+        ang_vel = torch.zeros(len(env_ids), 3, device=self.device)
+        ball_vel = torch.cat((lin_vel, ang_vel), dim=1)
+        ball_state[:, 7:] = ball_vel
+        self._ball.write_root_pose_to_sim(ball_state[:, :7], env_ids)
+        self._ball.write_root_velocity_to_sim(ball_state[:, 7:], env_ids)
+
+        # table
+        table_state = self._table.data.default_root_state.clone()[env_ids]
+        table_state[:, 0:3] = table_state[:, 0:3] + self.scene.env_origins[env_ids]
+        self._table.write_root_pose_to_sim(table_state[:, :7], env_ids)
+        self._table.write_root_velocity_to_sim(table_state[:, 7:], env_ids)
+        self._compute_intermediate_values()
+
+    def _compute_intermediate_values(self):
+        # Compute intermediate values for the robot (if needed)
+        self.robot_joint_pos = self._robot.data.joint_pos
+        self.robot_joint_vel = self._robot.data.joint_vel
+
+        # For ball: extract global pose and then compute local pose using scene.env_origins
+        self.ball_global_pos = (
+            self._ball.data.root_pos_w
+        )  # Global position in simulation
+        self.ball_pos = (
+            self._ball.data.root_pos_w - self.scene.env_origins
+        )  # Local (offset) position
+        self.ball_quat = self._ball.data.root_quat_w
+        self.ball_vel = self._ball.data.root_vel_w
+        self.ball_linvel = self._ball.data.root_lin_vel_w
+        self.ball_angvel = self._ball.data.root_ang_vel_w
+
+        # For table: similar approach to get global and local positions
+        self.table_global_pos = self._table.data.root_pos_w
+        self.table_pos = self._table.data.root_pos_w - self.scene.env_origins
+        self.table_quat = self._table.data.root_quat_w
+        self.table_vel = self._table.data.root_vel_w
+        self.table_linvel = self._table.data.root_lin_vel_w
+        self.table_angvel = self._table.data.root_ang_vel_w
+
+        # --- Compute Paddle Position and Contact ---
+        paddle_index = -1
+        paddle_index = 6
+        paddle_pos = self._robot.data.body_pos_w[:, paddle_index, :]
+        paddle_quat = self._robot.data.body_quat_w[:, paddle_index, :]
+        # 1) Normalize the quaternion (just in case):
+        paddle_quat = paddle_quat / paddle_quat.norm(dim=1, keepdim=True)
+        # 2) Build the local offset (0, +0.3, 0) and expand to (N,3):
+        local_offset = (
+            torch.tensor(
+                [0.0, 0.265, 0.0],
+                device=paddle_pos.device,
+                dtype=paddle_pos.dtype,
+            )
+            .unsqueeze(0)
+            .expand_as(paddle_pos)
+        )
+        rotated_offset: torch.Tensor = quat_apply(paddle_quat, local_offset)
+        # 4) Compute your touch point:
+        self.paddle_touch_point = paddle_pos + rotated_offset
+        # touch_pts = self.paddle_touch_point.cpu()
+        # rotations = paddle_quat.cpu()
+        # self.touch_marker.visualize(translations=touch_pts, orientations=rotations)
+        # 5) Compute touch reward:
+        contact_threshold = 0.1
+        distance = torch.norm(self.ball_global_pos - self.paddle_touch_point, dim=1)
+        contact_score = (contact_threshold - distance) / contact_threshold
+        self.ball_contact = torch.clamp(contact_score, min=0.0, max=1.0)
+        new_hits = contact_score > 0  # Tensor[N] bool
+        still_false = ~self.has_touch_paddle  # Tensor[N] bool
+        self.has_touch_paddle[still_false] = new_hits[still_false]
+
+        # if self.has_touch_paddle:
+        #     print("has_touch_paddle")
+        #     print(contact_score)
+
+        # --- Compute Contact with table ---
+        bx, by, bz = (self.ball_pos[:, 0], self.ball_pos[:, 1], self.ball_pos[:, 2])
+        # 3) Load your table‐contact bounds from self
+        tcx_min, tcx_max = self.cfg.table_contact_x
+        tcy_min, tcy_max = self.cfg.table_contact_y
+        tcz_min, tcz_max = self.cfg.table_contact_z
+
+        ncx_min, ncx_max = self.cfg.table_not_contact_x
+        ncy_min, ncy_max = self.cfg.table_not_contact_y
+        ncz_min, ncz_max = self.cfg.table_not_contact_z
+
+        # 4) Build masks
+        self.has_touch_opponent_table = (
+            (bx >= tcx_min)
+            & (bx <= tcx_max)
+            & (by >= tcy_min)
+            & (by <= tcy_max)
+            & (bz >= tcz_min)
+            & (bz <= tcz_max)
+        )
+        has_touch_own_table_just_now = (
+            (bx >= ncx_min)
+            & (bx <= ncx_max)
+            & (by >= ncy_min)
+            & (by <= ncy_max)
+            & (bz >= ncz_min)
+            & (bz <= ncz_max)
+            & (~self.has_touch_own_table_prev)
+        )
+        self.has_touch_own_table_prev = (
+            self.has_touch_own_table | has_touch_own_table_just_now
+        )
+        self.has_touch_own_table = has_touch_own_table_just_now
+
+        self.has_first_bouce_prev = self.has_first_bouce.clone()
+        still_false = ~self.has_first_bouce
+        self.has_first_bouce[still_false] = self.has_touch_own_table[still_false]
 
     def _get_observations(self) -> dict:
         obs = torch.cat(
             (
-                self.joint_pos[:, self._pole_dof_idx[0]].unsqueeze(dim=1),
-                self.joint_vel[:, self._pole_dof_idx[0]].unsqueeze(dim=1),
-                self.joint_pos[:, self._cart_dof_idx[0]].unsqueeze(dim=1),
-                self.joint_vel[:, self._cart_dof_idx[0]].unsqueeze(dim=1),
+                self._robot.data.joint_pos,
+                self._robot.data.joint_vel,
+                self.ball_pos,
+                self.ball_linvel,
             ),
             dim=-1,
         )
-        observations = {"policy": obs}
-        return observations
-
-    def _get_rewards(self) -> torch.Tensor:
-        total_reward = compute_rewards(
-            self.cfg.rew_scale_alive,
-            self.cfg.rew_scale_terminated,
-            self.cfg.rew_scale_pole_pos,
-            self.cfg.rew_scale_cart_vel,
-            self.cfg.rew_scale_pole_vel,
-            self.joint_pos[:, self._pole_dof_idx[0]],
-            self.joint_vel[:, self._pole_dof_idx[0]],
-            self.joint_pos[:, self._cart_dof_idx[0]],
-            self.joint_vel[:, self._cart_dof_idx[0]],
-            self.reset_terminated,
-        )
-        return total_reward
-
-    def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        self.joint_pos = self.robot.data.joint_pos
-        self.joint_vel = self.robot.data.joint_vel
-
-        time_out = self.episode_length_buf >= self.max_episode_length - 1
-        out_of_bounds = torch.any(torch.abs(self.joint_pos[:, self._cart_dof_idx]) > self.cfg.max_cart_pos, dim=1)
-        out_of_bounds = out_of_bounds | torch.any(torch.abs(self.joint_pos[:, self._pole_dof_idx]) > math.pi / 2, dim=1)
-        return out_of_bounds, time_out
-
-    def _reset_idx(self, env_ids: Sequence[int] | None):
-        if env_ids is None:
-            env_ids = self.robot._ALL_INDICES
-        super()._reset_idx(env_ids)
-
-        joint_pos = self.robot.data.default_joint_pos[env_ids]
-        joint_pos[:, self._pole_dof_idx] += sample_uniform(
-            self.cfg.initial_pole_angle_range[0] * math.pi,
-            self.cfg.initial_pole_angle_range[1] * math.pi,
-            joint_pos[:, self._pole_dof_idx].shape,
-            joint_pos.device,
-        )
-        joint_vel = self.robot.data.default_joint_vel[env_ids]
-
-        default_root_state = self.robot.data.default_root_state[env_ids]
-        default_root_state[:, :3] += self.scene.env_origins[env_ids]
-
-        self.joint_pos[env_ids] = joint_pos
-        self.joint_vel[env_ids] = joint_vel
-
-        self.robot.write_root_pose_to_sim(default_root_state[:, :7], env_ids)
-        self.robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
-        self.robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
+        return {"policy": obs}
 
 
 @torch.jit.script
 def compute_rewards(
-    rew_scale_alive: float,
-    rew_scale_terminated: float,
-    rew_scale_pole_pos: float,
-    rew_scale_cart_vel: float,
-    rew_scale_pole_vel: float,
-    pole_pos: torch.Tensor,
-    pole_vel: torch.Tensor,
-    cart_pos: torch.Tensor,
-    cart_vel: torch.Tensor,
-    reset_terminated: torch.Tensor,
-):
-    rew_alive = rew_scale_alive * (1.0 - reset_terminated.float())
-    rew_termination = rew_scale_terminated * reset_terminated.float()
-    rew_pole_pos = rew_scale_pole_pos * torch.sum(torch.square(pole_pos).unsqueeze(dim=1), dim=-1)
-    rew_cart_vel = rew_scale_cart_vel * torch.sum(torch.abs(cart_vel).unsqueeze(dim=1), dim=-1)
-    rew_pole_vel = rew_scale_pole_vel * torch.sum(torch.abs(pole_vel).unsqueeze(dim=1), dim=-1)
-    total_reward = rew_alive + rew_termination + rew_pole_pos + rew_cart_vel + rew_pole_vel
+    rew_scale_y: float,
+    rew_scale_contact: float,
+    rew_scale_table_success: float,
+    rew_scale_table_fail: float,
+    rew_scale_ball_floor: float,
+    ball_vel: torch.Tensor,  # (N, 3): [vx, vy, vz]
+    ball_contact: torch.Tensor,  # (N,)  binary contact flag (1 if contact, else 0)
+    has_touch_paddle: torch.Tensor,
+    has_touch_opponent_table: torch.Tensor,
+    has_touch_own_table: torch.Tensor,
+    has_first_bouce: torch.Tensor,
+    ball_pos: torch.Tensor,
+) -> torch.Tensor:
+    reward_vel = -ball_vel[:, 1] * has_touch_paddle * rew_scale_y
+    # Add bonus reward if contact happened (binary flag).
+    reward_contact = rew_scale_contact * ball_contact.float()
+    rew_table_success = (
+        has_touch_paddle * has_touch_opponent_table.float() * rew_scale_table_success
+    )
+    rew_table_fail = (
+        has_first_bouce * has_touch_own_table.float() * rew_scale_table_fail
+    )
+    ball_y = ball_pos[:, 1]  # (N,)
+    mask_fail = rew_table_fail != 0  # (N,) boolean
+    rew_table_fail[mask_fail] += ball_y[mask_fail] + 0.1
+
+    ball_z = ball_pos[:, 2]
+    ball_to_floor = ball_z < 0.65
+    rew_ball_to_floor = ball_to_floor * rew_scale_ball_floor
+
+    total_reward = (
+        # reward_vel
+        reward_contact
+        + rew_table_success
+        - rew_table_fail
+        - rew_ball_to_floor
+    )
+    # print("has_first_bouce : " + str(has_first_bouce[0]))
+    # print("has_touch_own_table : " + str(has_touch_own_table[0]))
+    # print("has_touch_paddle : " + str(has_touch_paddle[0]))
+    # print("has_touch_opponent_table : " + str(has_touch_opponent_table[0]))
+    # print("*****")
+    # if torch.any(reward_contact != 0):
+    #     print("reward_contact", reward_contact)
+    #     print("total_reward", total_reward)
+    #     print("*****")
+    # if torch.any(rew_table_success != 0):
+    #     print("rew_table_success", rew_table_success)
+    #     print("total_reward", total_reward)
+    #     print("*****")
+    # if torch.any(rew_table_fail != 0):
+    #     print("rew_table_fail", rew_table_fail)
+    #     print("total_reward", total_reward)
+    #     print("*****")
+    # if torch.any(rew_ball_to_floor != 0):
+    #     print("rew_ball_to_floor", rew_ball_to_floor)
+    #     print("total_reward", total_reward)
+    #     print("*****")
+    # if torch.any(reward_vel != 0):
+    #     print("reward_vel", reward_vel)
     return total_reward
