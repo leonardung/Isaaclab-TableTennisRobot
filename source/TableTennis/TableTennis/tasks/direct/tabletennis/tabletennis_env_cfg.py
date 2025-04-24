@@ -40,15 +40,15 @@ class TabletennisEnvCfg(DirectRLEnvCfg):
 
     table_contact_x = (-0.74, 0.74)
     table_contact_y = (-1.35, -0.1)
-    table_contact_z = (0.68, 0.78)
+    table_contact_z = (0.68, 0.735)
 
     table_not_contact_x = (-0.74, 0.74)
     table_not_contact_y = (0, 1.36)
-    table_not_contact_z = (0.68, 0.76)
+    table_not_contact_z = (0.68, 0.735)
 
-    rew_scale_y = 0.05
+    rew_scale_y = 0.5
     rew_scale_contact = 1
-    rew_scale_table_success = 2
+    rew_scale_table_success = 5
     rew_scale_table_fail = 2
     rew_scale_ball_floor = 3.5
 

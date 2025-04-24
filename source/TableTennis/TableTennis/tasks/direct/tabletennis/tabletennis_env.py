@@ -4,9 +4,12 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 from __future__ import annotations
+import datetime
+import os
 
+from matplotlib import pyplot as plt
+import numpy as np
 import torch
-
 import isaaclab.sim as sim_utils
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.assets import Articulation
@@ -40,6 +43,15 @@ class TabletennisEnv(DirectRLEnv):
         self.has_touch_own_table_prev = torch.zeros(
             self.num_envs, device=self.device
         ).bool()
+        self.reward_vel_prev = torch.zeros(self.num_envs, device=self.device)
+
+        # debug
+        self.current_obs = []
+        self.current_rew = []
+        now = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        self.logdir = os.path.join("logs/plots", now)
+        os.makedirs(self.logdir, exist_ok=True)
+        self.episode_count = 0
 
     def _setup_scene(self):
         # marker_cfg = VisualizationMarkersCfg(
@@ -82,7 +94,7 @@ class TabletennisEnv(DirectRLEnv):
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         truncated = self.episode_length_buf >= self.max_episode_length - 1
         total_reward = self.total_reward.unsqueeze(1)
-        stop = torch.any(total_reward <= -1, dim=1) | torch.any(total_reward > 1, dim=1)
+        stop = torch.any(total_reward <= -1, dim=1) | torch.any(total_reward >= 5, dim=1)
         # if stop:
         #     print("----Has been stopped----")
         #     print("total_reward", total_reward)
@@ -95,13 +107,20 @@ class TabletennisEnv(DirectRLEnv):
         self._compute_intermediate_values()
 
         # Compute the reward using our custom function.
-        self.total_reward: torch.Tensor = compute_rewards(
+        (
+            reward_contact,
+            rew_table_success,
+            rew_table_fail,
+            rew_ball_to_floor,
+            reward_vel,
+        ) = compute_rewards(
             self.cfg.rew_scale_y,
             self.cfg.rew_scale_contact,
             self.cfg.rew_scale_table_success,
             self.cfg.rew_scale_table_fail,
             self.cfg.rew_scale_ball_floor,
             self.ball_linvel,
+            self.reward_vel_prev,
             self.ball_contact,
             self.has_touch_paddle,
             self.has_touch_opponent_table,
@@ -109,37 +128,62 @@ class TabletennisEnv(DirectRLEnv):
             self.has_first_bouce_prev,
             self.ball_pos,
         )
+        self.total_reward = (
+            reward_contact
+            + rew_table_success
+            - rew_table_fail
+            - rew_ball_to_floor
+            + reward_vel
+        )
+        still_false = self.reward_vel_prev == 0
+        self.reward_vel_prev[still_false] = reward_vel[still_false]
+
+        self.current_rew.append(
+            {
+                "reward_contact": reward_contact[0].cpu().numpy(),
+                "rew_table_success": rew_table_success[0].cpu().numpy(),
+                "reward_vel": reward_vel[0].cpu().numpy(),
+                "rew_table_fail": rew_table_fail[0].cpu().numpy(),
+                "rew_ball_to_floor": rew_ball_to_floor[0].cpu().numpy(),
+            }
+        )
         return self.total_reward
 
     def _reset_idx(self, env_ids: torch.Tensor | None):
         super()._reset_idx(env_ids)
         # print("----- reset -----")
 
-        # robot
-        self.has_touch_paddle = torch.zeros(self.num_envs, device=self.device).bool()
-        self.has_first_bouce = torch.zeros(self.num_envs, device=self.device).bool()
-        self.has_first_bouce_prev = torch.zeros(
-            self.num_envs, device=self.device
-        ).bool()
-        self.has_touch_own_table = torch.zeros(self.num_envs, device=self.device).bool()
-        self.has_touch_own_table_prev = torch.zeros(
-            self.num_envs, device=self.device
-        ).bool()
+        # save plots
+        if 0 in env_ids and len(self.current_obs) != 0 and len(self.current_rew) != 0:
+            if self.episode_count % 50 == 0:
+                self._plot_last_episode(self.current_obs, self.current_rew)
+            self.current_obs = []
+            self.current_rew = []
+            self.episode_count += 1
+
+        # reset the entries in env_ids
+        self.total_reward[env_ids] = 0.0
+        self.has_touch_paddle[env_ids] = False
+        self.has_first_bouce[env_ids] = False
+        self.has_first_bouce_prev[env_ids] = False
+        self.has_touch_own_table[env_ids] = False
+        self.has_touch_own_table_prev[env_ids] = False
+        self.reward_vel_prev[env_ids] = 0.0
+
+        # robot joints (only those envs)
         joint_pos = self._robot.data.default_joint_pos[env_ids]
         joint_vel = torch.zeros_like(joint_pos)
         self._robot.write_joint_position_to_sim(joint_pos, env_ids=env_ids)
         self._robot.write_joint_velocity_to_sim(joint_vel, env_ids=env_ids)
 
-        # ball
+        # ball (only env_ids)
         ball_state = self._ball.data.default_root_state.clone()[env_ids]
-        # Add the per-environment offsets to the ball positions.
-        ball_state[:, 0:3] = ball_state[:, 0:3] + self.scene.env_origins[env_ids]
-        # Add random position noise on the x-axis.
+        ball_state[:, :3] += self.scene.env_origins[env_ids]
+        # random x-noise and velocity
         pos_noise = torch.empty(len(env_ids), 1, device=self.device).uniform_(
             *self.cfg.ball_pos_x_range
         )
-        ball_state[:, 0:1] = ball_state[:, 0:1] + pos_noise
-        # Generate random linear velocities for the ball.
+        ball_state[:, 0:1] += pos_noise
         v_x = torch.empty(len(env_ids), 1, device=self.device).uniform_(
             *self.cfg.ball_speed_x_range
         )
@@ -150,18 +194,17 @@ class TabletennisEnv(DirectRLEnv):
             *self.cfg.ball_speed_z_range
         )
         lin_vel = torch.cat((v_x, v_y, v_z), dim=1)
-        # Set angular velocities to zero.
         ang_vel = torch.zeros(len(env_ids), 3, device=self.device)
-        ball_vel = torch.cat((lin_vel, ang_vel), dim=1)
-        ball_state[:, 7:] = ball_vel
+        ball_state[:, 7:] = torch.cat((lin_vel, ang_vel), dim=1)
         self._ball.write_root_pose_to_sim(ball_state[:, :7], env_ids)
         self._ball.write_root_velocity_to_sim(ball_state[:, 7:], env_ids)
 
-        # table
+        # table (only env_ids)
         table_state = self._table.data.default_root_state.clone()[env_ids]
-        table_state[:, 0:3] = table_state[:, 0:3] + self.scene.env_origins[env_ids]
+        table_state[:, :3] += self.scene.env_origins[env_ids]
         self._table.write_root_pose_to_sim(table_state[:, :7], env_ids)
         self._table.write_root_velocity_to_sim(table_state[:, 7:], env_ids)
+
         self._compute_intermediate_values()
 
     def _compute_intermediate_values(self):
@@ -213,10 +256,11 @@ class TabletennisEnv(DirectRLEnv):
         # rotations = paddle_quat.cpu()
         # self.touch_marker.visualize(translations=touch_pts, orientations=rotations)
         # 5) Compute touch reward:
-        contact_threshold = 0.1
+        contact_threshold = 0.06
         distance = torch.norm(self.ball_global_pos - self.paddle_touch_point, dim=1)
         contact_score = (contact_threshold - distance) / contact_threshold
         self.ball_contact = torch.clamp(contact_score, min=0.0, max=1.0)
+        self.ball_contact = self.ball_contact * ~self.has_touch_paddle
         new_hits = contact_score > 0  # Tensor[N] bool
         still_false = ~self.has_touch_paddle  # Tensor[N] bool
         self.has_touch_paddle[still_false] = new_hits[still_false]
@@ -258,10 +302,32 @@ class TabletennisEnv(DirectRLEnv):
             self.has_touch_own_table | has_touch_own_table_just_now
         )
         self.has_touch_own_table = has_touch_own_table_just_now
-
+        # print("has_touch_own_table-----------", self.has_touch_own_table)
         self.has_first_bouce_prev = self.has_first_bouce.clone()
+        # print("has_first_bouce---------------", self.has_first_bouce)
         still_false = ~self.has_first_bouce
+        # print("still_false-------------------", still_false)
         self.has_first_bouce[still_false] = self.has_touch_own_table[still_false]
+        # print("has_first_bouce[still_false]--", self.has_first_bouce[still_false])
+        # print("has_first_bouce---------------", self.has_first_bouce)
+        # print("----")
+
+        self.current_obs.append(
+            {
+                "has_touch_own_table": self.has_touch_own_table[0].cpu().numpy(),
+                "has_touch_own_table_prev": self.has_touch_own_table_prev[0]
+                .cpu()
+                .numpy(),
+                "has_touch_opponent_table": self.has_touch_opponent_table[0]
+                .cpu()
+                .numpy(),
+                "has_first_bouce": self.has_first_bouce[0].cpu().numpy(),
+                "has_first_bouce_prev": self.has_first_bouce_prev[0].cpu().numpy(),
+                "ball_contact": self.ball_contact[0].cpu().numpy(),
+                "has_touch_paddle": self.has_touch_paddle[0].cpu().numpy(),
+                "has_first_bouce_prev": self.has_first_bouce_prev[0].cpu().numpy(),
+            }
+        )
 
     def _get_observations(self) -> dict:
         obs = torch.cat(
@@ -275,6 +341,58 @@ class TabletennisEnv(DirectRLEnv):
         )
         return {"policy": obs}
 
+    def _plot_last_episode(self, obs_list, rew_list):
+        # keys
+        obs_keys = list(obs_list[0].keys())
+        rew_keys = list(rew_list[0].keys())
+        nrows = max(len(obs_keys), len(rew_keys))
+
+        # time axis
+        t_obs = np.arange(len(obs_list))
+        t_rew = np.arange(len(rew_list))
+
+        # create subplots: nrows x 2
+        fig, axes = plt.subplots(
+            nrows,
+            2,
+            figsize=(12, 2.5 * nrows),
+            sharex=True,
+            tight_layout=True,
+        )
+
+        # ensure axes is always 2D array
+        if nrows == 1:
+            axes = axes[np.newaxis, :]
+
+        # plot observations in left column
+        for i, key in enumerate(obs_keys):
+            ax = axes[i, 0]
+            series = np.array([s[key] for s in obs_list])
+            ax.plot(t_obs, series)
+            ax.set_ylabel(key)
+        # blank any extra rows if obs < nrows
+        for i in range(len(obs_keys), nrows):
+            axes[i, 0].axis("off")
+
+        # plot rewards in right column
+        for i, key in enumerate(rew_keys):
+            ax = axes[i, 1]
+            series = np.array([r[key] for r in rew_list])
+            ax.plot(t_rew, series)
+            ax.set_ylabel(key)
+        # blank extra reward rows
+        for i in range(len(rew_keys), nrows):
+            axes[i, 1].axis("off")
+
+        # common x-label on bottom row
+        axes[-1, 0].set_xlabel("Timestep")
+        axes[-1, 1].set_xlabel("Timestep")
+
+        fig.suptitle("Last Episode: Observations (left) & Rewards (right)")
+        filename = os.path.join(self.logdir, f"episode_{self.episode_count:03d}.png")
+        fig.savefig(filename)
+        plt.close(fig)
+
 
 @torch.jit.script
 def compute_rewards(
@@ -284,14 +402,21 @@ def compute_rewards(
     rew_scale_table_fail: float,
     rew_scale_ball_floor: float,
     ball_vel: torch.Tensor,  # (N, 3): [vx, vy, vz]
+    reward_vel_prev: torch.Tensor,
     ball_contact: torch.Tensor,  # (N,)  binary contact flag (1 if contact, else 0)
     has_touch_paddle: torch.Tensor,
     has_touch_opponent_table: torch.Tensor,
     has_touch_own_table: torch.Tensor,
     has_first_bouce: torch.Tensor,
     ball_pos: torch.Tensor,
-) -> torch.Tensor:
-    reward_vel = -ball_vel[:, 1] * has_touch_paddle * rew_scale_y
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    reward_vel = (
+        -ball_vel[:, 1]
+        * has_touch_paddle.float()
+        * rew_scale_y
+        * (ball_contact == 0).float()
+        * torch.logical_not(reward_vel_prev)
+    )
     # Add bonus reward if contact happened (binary flag).
     reward_contact = rew_scale_contact * ball_contact.float()
     rew_table_success = (
@@ -308,13 +433,6 @@ def compute_rewards(
     ball_to_floor = ball_z < 0.65
     rew_ball_to_floor = ball_to_floor * rew_scale_ball_floor
 
-    total_reward = (
-        # reward_vel
-        reward_contact
-        + rew_table_success
-        - rew_table_fail
-        - rew_ball_to_floor
-    )
     # print("has_first_bouce : " + str(has_first_bouce[0]))
     # print("has_touch_own_table : " + str(has_touch_own_table[0]))
     # print("has_touch_paddle : " + str(has_touch_paddle[0]))
@@ -338,4 +456,10 @@ def compute_rewards(
     #     print("*****")
     # if torch.any(reward_vel != 0):
     #     print("reward_vel", reward_vel)
-    return total_reward
+    return (
+        reward_contact,
+        rew_table_success,
+        rew_table_fail,
+        rew_ball_to_floor,
+        reward_vel,
+    )
