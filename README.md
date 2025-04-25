@@ -1,6 +1,6 @@
 # Table Tennis Robot RL (Isaac Lab)
 
-![Table‑Tennis Agent in Action](https://media2.giphy.com/media/v1.Y2lkPTc5MGI3NjExcjFvYWZjbm14d2gwN3c4Zmxibnl5Z2FuYzB2NG1vbzRoYWVld3cyeiZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/nMprUHze5Sy71UPrrq/giphy.gif)
+![Table‑Tennis Agent in Action](https://media2.giphy.com/media/v1.Y2lkPTc5MGI3NjExM25yY3JocHU4aTYzN2s1c3NkNmdhbmZxYzVqbHNqZHZ6Ym85cmUxaiZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/tmOYzlcMxLDTUCUOcT/giphy.gif)
 
 > **Goal:** train a UR10‑based robot to return ping‑pong balls in simulation using NVIDIA Isaac Lab and the [skrl](https://github.com/Toni-SM/skrl) reinforcement‑learning library.
 
