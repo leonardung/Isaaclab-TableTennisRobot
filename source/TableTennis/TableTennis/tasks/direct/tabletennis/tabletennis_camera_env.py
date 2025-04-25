@@ -16,15 +16,16 @@ from isaaclab.assets import Articulation
 from isaaclab.assets.rigid_object.rigid_object import RigidObject
 from isaaclab.envs import DirectRLEnv
 from isaaclab.utils.math import quat_apply
+from isaaclab.sensors import TiledCamera, save_images_to_file
 
-from .tabletennis_env_cfg import TabletennisEnvCfg
+from .tabletennis_camera_env_cfg import TabletennisCameraEnvCfg
 
 
-class TabletennisEnv(DirectRLEnv):
-    cfg: TabletennisEnvCfg
+class TabletennisCameraEnv(DirectRLEnv):
+    cfg: TabletennisCameraEnvCfg
 
     def __init__(
-        self, cfg: TabletennisEnvCfg, render_mode: str | None = None, **kwargs
+        self, cfg: TabletennisCameraEnvCfg, render_mode: str | None = None, **kwargs
     ):
         super().__init__(cfg, render_mode, **kwargs)
 
@@ -61,9 +62,12 @@ class TabletennisEnv(DirectRLEnv):
         self._robot = Articulation(self.cfg.robot)
         self._table = RigidObject(self.cfg.table)
         self._ball = RigidObject(self.cfg.ball)
+        self._tiled_camera = TiledCamera(self.cfg.tiled_camera)
+
         self.scene.articulations["robot"] = self._robot
         self.scene.rigid_objects["table"] = self._table
         self.scene.rigid_objects["ball"] = self._ball
+        self.scene.sensors["tiled_camera"] = self._tiled_camera
 
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
         self.scene.clone_environments(copy_from_source=False)
@@ -315,16 +319,15 @@ class TabletennisEnv(DirectRLEnv):
         )
 
     def _get_observations(self) -> dict:
-        obs = torch.cat(
-            (
-                self._robot.data.joint_pos,
-                self._robot.data.joint_vel,
-                self.ball_pos,
-                self.ball_linvel,
-            ),
-            dim=-1,
-        )
-        return {"policy": obs}
+        # Retrieve and (optionally) normalise the RGB image
+        rgb = self._tiled_camera.data.output["rgb"] / 255.0  # (N,H,W,3), float32
+        mean = torch.mean(rgb, dim=(1, 2), keepdim=True)
+        rgb -= mean  # zero-centre helps RL
+
+        if self.cfg.write_image_to_file:
+            save_images_to_file(rgb, "tabletennis_rgb.png")
+
+        return {"policy": rgb}
 
     def _plot_last_episode(self, obs_list, rew_list):
         # keys

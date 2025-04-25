@@ -24,3 +24,13 @@ gym.register(
         "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_cfg.yaml",
     },
 )
+
+gym.register(
+    id="Template-Tabletennis-Direct-Camera-v0",
+    entry_point=f"{__name__}.tabletennis_camera_env:TabletennisCameraEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.tabletennis_camera_env_cfg:TabletennisCameraEnvCfg",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_camera_ppo_cfg.yaml",
+    },
+)

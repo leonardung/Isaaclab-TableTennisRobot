@@ -15,17 +15,37 @@ from isaaclab.sim import (
 )
 from isaaclab.actuators.actuator_cfg import ImplicitActuatorCfg
 from isaaclab.utils import configclass
+from isaaclab.sensors import TiledCameraCfg
+import isaaclab.sim as sim_utils
 
 
 @configclass
-class TabletennisEnvCfg(DirectRLEnvCfg):
+class TabletennisCameraEnvCfg(DirectRLEnvCfg):
     # env
     decimation = 2
     episode_length_s = 5.0
     # - spaces definition
     action_space = 6
-    observation_space = 18
     state_space = 0
+    tiled_camera: TiledCameraCfg = TiledCameraCfg(
+        prim_path="/World/envs/env_.*/Camera",
+        offset=TiledCameraCfg.OffsetCfg(  # 2 m behind the robot, 1 m up
+            pos=(0.0, 4.8, 2),
+            rot=(0.6964, 0.1228, 0.1228, -0.6964), # look at -Y, -Z
+            convention="world",
+        ),
+        data_types=["rgb"],  # switch to ["depth"] if wanted
+        spawn=sim_utils.PinholeCameraCfg(
+            focal_length=24.0,
+            focus_distance=400.0,
+            horizontal_aperture=20.955,
+            clipping_range=(0.1, 20.0),
+        ),
+        width=100,
+        height=100,
+    )
+    write_image_to_file: bool = False
+    observation_space = [tiled_camera.height, tiled_camera.width, 3]  # RGB
 
     # reset
     ball_speed_x_range = (-1, 1)
@@ -45,8 +65,8 @@ class TabletennisEnvCfg(DirectRLEnvCfg):
     table_not_contact_x = (-0.74, 0.74)
     table_not_contact_y = (0, 1.36)
     table_not_contact_z = (0.68, 0.735)
-    
-    contact_threshold=0.06
+
+    contact_threshold = 0.06
 
     rew_scale_y = 0.5
     rew_scale_contact = 1
@@ -70,7 +90,7 @@ class TabletennisEnvCfg(DirectRLEnvCfg):
 
     # scene
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
-        num_envs=4096, env_spacing=5.0, replicate_physics=True
+        num_envs=2048, env_spacing=5.0, replicate_physics=True
     )
 
     # robot
