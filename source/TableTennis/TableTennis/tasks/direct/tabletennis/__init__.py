@@ -18,10 +18,8 @@ gym.register(
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.tabletennis_env_cfg:TabletennisEnvCfg",
-        "skrl_amp_cfg_entry_point": f"{agents.__name__}:skrl_amp_cfg.yaml",
-        "skrl_ippo_cfg_entry_point": f"{agents.__name__}:skrl_ippo_cfg.yaml",
-        "skrl_mappo_cfg_entry_point": f"{agents.__name__}:skrl_mappo_cfg.yaml",
-        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_cfg.yaml",
+        # "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_cfg_simple.yaml",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_cfg_auto.yaml",
     },
 )
 
@@ -31,6 +29,6 @@ gym.register(
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.tabletennis_camera_env_cfg:TabletennisCameraEnvCfg",
-        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_camera_ppo_cfg.yaml",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_camera_simple_ppo_cfg.yaml",
     },
 )

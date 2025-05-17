@@ -70,7 +70,7 @@ class TabletennisEnvCfg(DirectRLEnvCfg):
 
     # scene
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
-        num_envs=4096, env_spacing=5.0, replicate_physics=True
+        num_envs=2048, env_spacing=5.0, replicate_physics=True
     )
 
     # robot

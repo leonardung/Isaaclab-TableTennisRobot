@@ -21,27 +21,27 @@ models:
           - conv2d: {out_channels: 64, kernel_size: 8, stride: 4, padding: 0}
           - conv2d: {out_channels: 128, kernel_size: 4, stride: 2, padding: 0}
           # residual block 1 (128 → 128)
-          - skip_start
+          # - skip_start
           - conv2d: {out_channels: 128, kernel_size: 3, stride: 1, padding: 1}
           - conv2d: {out_channels: 128, kernel_size: 3, stride: 1, padding: 1}
-          - skip_end
+          # - skip_end
           # residual block 2 (128 → 256, down-sample stride 2)
           - conv2d: {out_channels: 256, kernel_size: 3, stride: 2, padding: 1}
-          - skip_start
+          # - skip_start
           - conv2d: {out_channels: 256, kernel_size: 3, stride: 1, padding: 1}
           - conv2d: {out_channels: 256, kernel_size: 3, stride: 1, padding: 1}
-          - skip_end
+          # - skip_end
           # tail
           - conv2d: {out_channels: 256, kernel_size: 3, stride: 1, padding: 1}
           - flatten
         activations: relu               # applied after every conv
 
-      # ───────────── policy / value head ─────────────
       - name: net
         input: features_extractor
-        layers: [1024, 512]       # wider MLP for richer representations
+        layers: [512]
         activations: elu
     output: ACTIONS
+ 
   value:  # see deterministic_model parameters
     class: DeterministicMixin
     clip_actions: False
@@ -54,25 +54,24 @@ models:
           - conv2d: {out_channels: 64, kernel_size: 8, stride: 4, padding: 0}
           - conv2d: {out_channels: 128, kernel_size: 4, stride: 2, padding: 0}
           # residual block 1 (128 → 128)
-          - skip_start
+          # - skip_start
           - conv2d: {out_channels: 128, kernel_size: 3, stride: 1, padding: 1}
           - conv2d: {out_channels: 128, kernel_size: 3, stride: 1, padding: 1}
-          - skip_end
+          # - skip_end
           # residual block 2 (128 → 256, down-sample stride 2)
           - conv2d: {out_channels: 256, kernel_size: 3, stride: 2, padding: 1}
-          - skip_start
+          # - skip_start
           - conv2d: {out_channels: 256, kernel_size: 3, stride: 1, padding: 1}
           - conv2d: {out_channels: 256, kernel_size: 3, stride: 1, padding: 1}
-          - skip_end
+          # - skip_end
           # tail
           - conv2d: {out_channels: 256, kernel_size: 3, stride: 1, padding: 1}
           - flatten
         activations: relu               # applied after every conv
 
-      # ───────────── policy / value head ─────────────
       - name: net
         input: features_extractor
-        layers: [1024, 512]       # wider MLP for richer representations
+        layers: [512]
         activations: elu
     output: ONE
 

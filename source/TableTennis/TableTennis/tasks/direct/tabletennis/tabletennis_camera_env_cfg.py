@@ -41,8 +41,8 @@ class TabletennisCameraEnvCfg(DirectRLEnvCfg):
             horizontal_aperture=20.955,
             clipping_range=(0.1, 20.0),
         ),
-        width=100,
-        height=100,
+        width=256,
+        height=256,
     )
     write_image_to_file: bool = False
     observation_space = [tiled_camera.height, tiled_camera.width, 3]  # RGB
@@ -90,7 +90,7 @@ class TabletennisCameraEnvCfg(DirectRLEnvCfg):
 
     # scene
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
-        num_envs=2048, env_spacing=5.0, replicate_physics=True
+        num_envs=32, env_spacing=5.0, replicate_physics=True
     )
 
     # robot

@@ -13,34 +13,18 @@ models:
     max_log_std: 2.0
     initial_log_std: 0.0
     network:
-      - name: features_extractor
-        input: permute(STATES, (0, 3, 1, 2))  # PyTorch NHWC -> NCHW. Warning: don't permute for JAX since it expects NHWC
-        layers:
-          - conv2d: {out_channels: 32, kernel_size: 8, stride: 4, padding: 0}
-          - conv2d: {out_channels: 64, kernel_size: 4, stride: 2, padding: 0}
-          - conv2d: {out_channels: 64, kernel_size: 3, stride: 1, padding: 0}
-          - flatten
-        activations: relu
       - name: net
-        input: features_extractor
-        layers: [512]
+        input: STATES
+        layers: [1024, 512, 256, 128]
         activations: elu
     output: ACTIONS
   value:  # see deterministic_model parameters
     class: DeterministicMixin
     clip_actions: False
     network:
-      - name: features_extractor
-        input: permute(STATES, (0, 3, 1, 2))  # PyTorch NHWC -> NCHW. Warning: don't permute for JAX since it expects NHWC
-        layers:
-          - conv2d: {out_channels: 32, kernel_size: 8, stride: 4, padding: 0}
-          - conv2d: {out_channels: 64, kernel_size: 4, stride: 2, padding: 0}
-          - conv2d: {out_channels: 64, kernel_size: 3, stride: 1, padding: 0}
-          - flatten
-        activations: relu
       - name: net
-        input: features_extractor
-        layers: [512]
+        input: STATES
+        layers: [1024, 512, 256, 128]
         activations: elu
     output: ONE
 
@@ -56,41 +40,41 @@ memory:
 # https://skrl.readthedocs.io/en/latest/api/agents/ppo.html
 agent:
   class: PPO
-  rollouts: 128
+  rollouts: 512
   learning_epochs: 4
-  mini_batches: 8
+  mini_batches: 2
   discount_factor: 0.999
   lambda: 0.95
-  learning_rate: 1.0e-04
+  learning_rate: 1.2e-3
   learning_rate_scheduler: KLAdaptiveLR
   learning_rate_scheduler_kwargs:
     kl_threshold: 0.008
-  state_preprocessor: null
+  state_preprocessor: RunningStandardScaler
   state_preprocessor_kwargs: null
   value_preprocessor: RunningStandardScaler
   value_preprocessor_kwargs: null
   random_timesteps: 0
   learning_starts: 0
   grad_norm_clip: 1.0
-  ratio_clip: 0.2
+  ratio_clip: 0.1
   value_clip: 0.2
   clip_predicted_values: True
-  entropy_loss_scale: 0.0
+  entropy_loss_scale: 0.02
   value_loss_scale: 1.0
   kl_threshold: 0.0
-  rewards_shaper_scale: 1.0
-  time_limit_bootstrap: False
+  rewards_shaper_scale: 0.1
+  time_limit_bootstrap : False
   # logging and checkpoint
   experiment:
     directory: "cartpole_direct"
     experiment_name: ""
     write_interval: 1000
-    checkpoint_interval: 10000
+    checkpoint_interval: 100000
 
 
 # Sequential trainer
 # https://skrl.readthedocs.io/en/latest/api/trainers/sequential.html
 trainer:
   class: SequentialTrainer
-  timesteps: 300000
+  timesteps: 200000
   environment_info: log

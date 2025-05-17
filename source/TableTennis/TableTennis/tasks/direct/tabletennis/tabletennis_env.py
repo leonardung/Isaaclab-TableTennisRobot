@@ -149,7 +149,7 @@ class TabletennisEnv(DirectRLEnv):
         super()._reset_idx(env_ids)
         # save plots
         if 0 in env_ids and len(self.current_obs) != 0 and len(self.current_rew) != 0:
-            if self.episode_count % 50 == 0:
+            if self.episode_count % 500 == 0:
                 self._plot_last_episode(self.current_obs, self.current_rew)
             self.current_obs = []
             self.current_rew = []
