@@ -22,6 +22,10 @@ The core logic lives in `tabletennis_env_cfg.py` (environment parameters) and `t
 
 ---
 
+## Download my custom usd
+https://drive.google.com/drive/folders/1qRUON2e8wAQHjJhucGsG2Pa4nqtzxTi1?usp=sharing
+
+and place them in `custom_usd/`
 
 ## Training
 

@@ -77,7 +77,7 @@ class TabletennisEnvCfg(DirectRLEnvCfg):
     robot = ArticulationCfg(
         prim_path="/World/envs/env_.*/Robot",
         spawn=UsdFileCfg(
-            usd_path="C:/Users/Leonard/Documents/Python_projects/Robot_RL/custom_usd/UR10_instanceable_pong.usd",
+            usd_path="custom_usd/UR10_instanceable_pong.usd",
             rigid_props=RigidBodyPropertiesCfg(
                 disable_gravity=False,
                 max_depenetration_velocity=5.0,
@@ -111,7 +111,7 @@ class TabletennisEnvCfg(DirectRLEnvCfg):
     table = RigidObjectCfg(
         prim_path="/World/envs/env_.*/Table",
         spawn=UsdFileCfg(
-            usd_path="C:/Users/Leonard/Documents/Python_projects/Robot_RL/custom_usd/Table_tennis.usd",
+            usd_path="custom_usd/Table_tennis.usd",
             rigid_props=RigidBodyPropertiesCfg(
                 kinematic_enabled=False,
                 disable_gravity=False,
@@ -130,7 +130,7 @@ class TabletennisEnvCfg(DirectRLEnvCfg):
     ball = RigidObjectCfg(
         prim_path="/World/envs/env_.*/Ball",
         spawn=UsdFileCfg(
-            usd_path="C:/Users/Leonard/Documents/Python_projects/Robot_RL/custom_usd/Ping_pong_ball.usd",
+            usd_path="custom_usd/Ping_pong_ball.usd",
             rigid_props=RigidBodyPropertiesCfg(
                 kinematic_enabled=False,
                 disable_gravity=False,
